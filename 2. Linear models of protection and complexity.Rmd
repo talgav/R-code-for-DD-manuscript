@@ -1,0 +1,1037 @@
+---
+title: "2. Linear models of protection and complexity"
+author: "Tal Gavriel"
+date: "2025-03-18"
+output:
+   prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+```{r message=FALSE, warning=FALSE}
+library(DarkDiv)
+library(tidyverse)
+library(vegan)
+library(plotrix)
+library(sjPlot)
+library(sjmisc)
+library(gridExtra)
+library(lme4)
+library(lmerTest)
+library(MuMIn)
+library(glmmTMB)
+library(DHARMa)
+library(ggeffects)
+library(patchwork)
+
+select <- dplyr::select
+
+```
+
+# In this script:
+
+1. Models of the realtionship between `Protection` and diversity componenets - `dark diversity`, `observed richness`, `species pool` and `completness`
+
+2. Models of the realtionship between `Complexity` and diversity componenets - `dark diversity`, `observed richness`, `species pool` and `completness`
+
+
+# Input files:
+
+loaded from the `clean output data` folder
+
+* `Clean_medata_dd.Rdata` - dark diversity calculation for MeData, with Lisandro data 
+
+* `Clean_complexity_dd.Rdata` - dark diversity calculation for the Israel complexity data 
+
+* `pairs.Rdata` - pairs of protected and control sites
+
+# Outputs files:
+
+**Models tables **
+
+*  `protection_model_results.xls` - tables for protection models
+
+*  `curvature_model_results.xls` -  tables for Curvature complexity models
+
+*  `vr_model_results.xls` -  tables for vertical relief complexity modeld
+
+* `completenes_model_results` - All completeness models
+
+* `ms_curve` - model selection between additive and interaction models for curvature (Appendix)
+
+* `ms_vr`- model selection between additive and interaction models for vertical relief (Appendix)
+
+**Plots** 
+
+* `predictions_plot.pdf` - plot of protection + curvature models (Fig 3)
+
+* `vr_predictions_plot.pdf`- plot of vertical relief models (Appendix)
+
+* `completeness_prediction_plot`- plots of completeness (Appendix)
+
+
+# Protection models
+
+load `dd_data` data
+
+```{r}
+load("Clean_MeData_dd.Rdata")
+
+load("pairs.Rdata")
+```
+
+## Final data preparation:
+
+1. Keep in the models only paired sites of no protection vs fully or partly protected
+
+2. Remove transect with 1 species in the observed richness
+
+3. Treat enforcement as factor
+
+
+
+```{r}
+pairs$Cluster <- coalesce(pairs$Cluster, pairs$pair)
+
+cluster<-pairs %>% select(-pair) %>% distinct() %>% rename(pair = Cluster)
+```
+
+
+```{r}
+protction_model_data<-left_join(dd_data,cluster)
+
+protction_model_data<-protction_model_data %>% drop_na(pair)
+
+# which pairs I have in the data:
+
+unique(protction_model_data$pair)
+
+# how many pairs:
+
+length(unique(protction_model_data$pair))
+
+# which sites I have in the data
+
+unique(protction_model_data$Site)
+
+# How many sites:
+
+length(unique(protction_model_data$Site))
+
+#  richness <1
+
+protction_model_data<-protction_model_data %>% filter(observed_richness >1)
+
+# drop sites level
+
+protction_model_data$Site<-droplevels(protction_model_data$Site)
+
+# How many transects in each pair:  
+
+summary.factor(protction_model_data$pair)
+
+# convert to factor
+
+protction_model_data$enforcement<-as.factor(protction_model_data$enforcement)
+
+# how many from each enforcement level:
+
+summary.factor(protction_model_data$enforcement)
+
+```
+
+## Dark diversity model
+
+new option
+
+
+```{r}
+# run model
+
+Dark <- glmmTMB(log(dark+1) ~ enforcement + (1|pair),
+                  data = protction_model_data,
+                  family = gaussian())
+
+# model summary
+
+summary(Dark) 
+
+# residuals check
+
+#plot(simulateResiduals(Dark))
+
+# prediction for the different enforcement levels
+
+pred_dark = ggpredict(Dark,terms = 'enforcement')
+
+# extract the p-value for the plot
+
+
+p <-summary(Dark)
+
+p0<-round(as.numeric(p[["coefficients"]][["cond"]][[10]]),3)
+p2<-round(as.numeric(p[["coefficients"]][["cond"]][[11]]),3)
+p3<-round(as.numeric(p[["coefficients"]][["cond"]][[12]]),3)
+
+pval<-data.frame(enforcement = as.factor(c("0","2","3")),
+                 p_val = c(p0,p2,p3))
+
+# add significant signs
+
+pval<- pval %>% mutate(sign = case_when(p_val > 0.1 ~ "",
+                                        p_val > 0.05 & p_val <= 0.1 ~ "",
+                                        p_val > 0.01 & p_val <= 0.05 ~ "*",
+                                        p_val > 0.001 & p_val <= 0.01 ~ "**",
+                                        p_val <= 0.001 ~ "***"))
+
+
+plot_dark_pro <- ggplot(data = pred_dark, aes(x = x, y = predicted)) +
+  geom_bar(stat = "identity", fill = "#7DCDE4", width = 0.7) +
+  geom_errorbar(aes(ymin = predicted - std.error, ymax = predicted + std.error), 
+                width = 0.2, color = "black", position = position_dodge(width = 0.7)) +
+  xlab("Protection") +
+  scale_x_discrete(labels = levels(protction_model_data$enforcement)) +
+  geom_text(data = pval,
+            aes(x = enforcement,y =  0.5, label = sign),
+            size = 5)+
+  ylab("Dark diversity") + theme_classic()
+
+plot_dark_pro
+
+rm(p,p0,p2,p3,pval,pred_dark)
+```
+
+
+## Observed richness model
+
+new version
+
+```{r}
+
+# run model
+
+Observed <- glmmTMB(log(observed_richness) ~ enforcement + (1|pair),
+                  data = protction_model_data,
+                  family = gaussian())
+# model summary
+
+summary(Observed)
+
+# plot Residuals
+
+#plot(simulateResiduals(Observed))
+
+# predict the values for the differnt enforcment level
+
+pred_observed <- ggpredict(Observed, terms = "enforcement")
+
+# extract the p-value for the plot
+
+
+p <-summary(Observed)
+
+p0<-round(as.numeric(p[["coefficients"]][["cond"]][[10]]),3)
+p2<-round(as.numeric(p[["coefficients"]][["cond"]][[11]]),3)
+p3<-round(as.numeric(p[["coefficients"]][["cond"]][[12]]),3)
+
+pval<-data.frame(enforcement = as.factor(c("0","2","3")),
+                 p_val = c(p0,p2,p3))
+
+# add significant signs
+
+pval<- pval %>% mutate(sign = case_when(p_val > 0.1 ~ "",
+                                        p_val > 0.05 & p_val <= 0.1 ~ "",
+                                        p_val > 0.01 & p_val <= 0.05 ~ "*",
+                                        p_val > 0.001 & p_val <= 0.01 ~ "**",
+                                        p_val <= 0.001 ~ "***"))
+# plot
+
+plot_obsrved_pro <- ggplot(data = pred_observed, aes(x = x, y = predicted)) +
+  geom_bar(stat = "identity", fill = "#F2E96C", width = 0.7) +
+  geom_errorbar(aes(ymin = predicted - std.error, ymax = predicted + std.error), width = 0.2, color = "black", position = position_dodge(width = 0.7)) +
+  xlab("Protection") +
+  scale_x_discrete(labels = levels(protction_model_data$enforcement)) +
+  geom_text(data = pval,
+            aes(x = enforcement,y =  1, label = sign),
+            size = 5)+
+  ylab("Observerd diversity") + theme_classic()
+
+plot_obsrved_pro
+
+rm(p,p0,p2,p3,pval,pred_observed)
+```
+
+
+## species pool model
+
+
+```{r}
+# run model
+
+Total <- glmmTMB(log(total) ~ enforcement + (1|pair),
+                  data = protction_model_data,family = gaussian())
+# summary
+
+summary(Total)
+
+# residuals
+
+#plot(simulateResiduals(Total))
+
+# predicted values for the enforcment levels
+
+pred_total=ggpredict(Total,terms = "enforcement")
+
+# get p-values for the plot
+
+p <-summary(Total)
+
+p0 <- round(as.numeric(p[["coefficients"]][["cond"]][[10]]),3)
+p2 <- round(as.numeric(p[["coefficients"]][["cond"]][[11]]),3)
+p3 <- round(as.numeric(p[["coefficients"]][["cond"]][[12]]),3)
+
+pval <-data.frame(enforcement = as.factor(c("0","2","3")),
+                 p_val = c(p0,p2,p3))
+
+# add significant signs
+
+pval <- pval %>% mutate(sign = case_when(p_val > 0.1 ~ "",
+                                        p_val > 0.05 & p_val <= 0.1 ~ "",
+                                        p_val > 0.01 & p_val <= 0.05 ~ "*",
+                                        p_val > 0.005 & p_val <= 0.01 ~ "**",
+                                        p_val <= 0.005 ~ "***"))
+
+# plot
+
+plot_total_pro <- ggplot(data = pred_total, aes(x = x, y = predicted)) +
+  geom_bar(stat = "identity", fill = "#ACD672", width = 0.7) +
+  geom_errorbar(aes(ymin = predicted - std.error, ymax = predicted + std.error), width = 0.2, color = "black", position = position_dodge(width = 0.7)) +
+  xlab("Protection") +
+  scale_x_discrete(labels = levels(protction_model_data$enforcement)) +
+  geom_text(data = pval,
+            aes(x = enforcement,y =  1, label = sign),
+            size = 5)+
+  ylab("Species pool size") + theme_classic()
+
+plot_total_pro
+
+rm(p,p0,p2,p3,pval,pred_total)
+
+
+```
+
+
+## save protection models tables
+
+
+models summery tables:
+
+
+```{r}
+
+#tab_model(Total, Observed, Dark, dv.labels = c("Species pool", "Observed richness", "Dark diversity"), file = "protection_model_results_new.xls")
+
+```
+
+## completeness - protection model
+
+calculated as ln(observed richness/dark diversity)
+
+Some transect have dark diversity = 0 and thus produce INF values, those transects was filterd out of this analyses.
+
+
+```{r}
+
+completeness<-protction_model_data %>%
+  mutate(completeness = log(dark/observed_richness)) %>% filter(completeness != -Inf)
+
+
+completeness_model <- glmmTMB(completeness ~ enforcement + (1|pair),
+                  data = completeness,family = gaussian())
+
+summary(completeness_model)
+
+#plot(simulateResiduals(completeness_model))
+
+pred_completeness=ggpredict(completeness_model,terms = c('enforcement'))
+
+# get p-values for the plot
+
+p <-summary(completeness_model)
+
+p0 <- round(as.numeric(p[["coefficients"]][["cond"]][[10]]),3)
+p2 <- round(as.numeric(p[["coefficients"]][["cond"]][[11]]),3)
+p3 <- round(as.numeric(p[["coefficients"]][["cond"]][[12]]),3)
+
+pval <-data.frame(enforcement = as.factor(c("0","2","3")),
+                 p_val = c(p0,p2,p3))
+
+# add significant signs
+
+pval <- pval %>% mutate(sign = case_when(p_val > 0.1 ~ "",
+                                        p_val > 0.05 & p_val <= 0.1 ~ "",
+                                        p_val > 0.01 & p_val <= 0.05 ~ "*",
+                                        p_val > 0.001 & p_val <= 0.01 ~ "**",
+                                        p_val <= 0.001 ~ "***"))
+
+# plot
+
+plot_completness_pro <- ggplot(data = pred_completeness, aes(x = x, y = predicted)) +
+  geom_bar(stat = "identity", fill = "red", width = 0.7) +
+  geom_errorbar(aes(ymin = predicted - std.error, ymax = predicted + std.error), width = 0.2, color = "black", position = position_dodge(width = 0.7)) +
+  xlab("Protection") +
+  scale_x_discrete(labels = levels(protction_model_data$enforcement)) +
+  geom_text(data = pval,
+            aes(x = enforcement,y =  -0.2, label = sign),
+            size = 5)+
+  ylab("Completeness") + theme_classic()+ geom_hline(yintercept=0)
+
+plot_total_pro
+
+rm(p,p0,p2,p3,pval,pred_completeness)
+
+```
+
+
+save completeness model table
+
+```{r}
+#tab_model(completeness_model,file = "Completeness_protection_model_new.xls")
+
+```
+
+# Complexity models
+
+load complexity dark diversity data - `Clean_complexity_dd.Rdata` 
+
+(loaded as `comp_dd`)
+
+```{r}
+load("Clean_complexity_dd.Rdata")
+```
+
+
+### final data orgenaizing
+
+Data preparation for model
+
+```{r}
+# remove transect with less than 2 species in the observed 
+
+complexity_for_model<-comp_dd %>% filter(observed_richness >1)
+
+# add column with completeness calculation 
+
+complexity_for_model<-complexity_for_model %>% 
+  mutate(completeness = log(observed_richness/dark))
+
+# data for completeness models without INF values
+
+complexity_comp <-complexity_for_model %>% filter(completeness != Inf)
+```
+
+
+first are all code for the models of the curvature complexity index (Figure 3)
+
+second are all code for the models of the vertical relief complexity index (Appendix)
+
+## Curvature index
+
+#### Curvature dark diversity 
+
+```{r}
+
+# run model 
+
+curv_dark<-glmmTMB(log(dark+1) ~  Curvature + protection + (1|site), data=complexity_for_model,family = gaussian())
+
+# summary
+
+summary(curv_dark)
+
+# residuals plots
+
+#plot(simulateResiduals(curv_dark))
+
+# predicted dark diversity for curvature values
+
+dark_curv_predict =ggpredict(curv_dark,terms = c('Curvature[-2:4 by=0.5]'))
+
+# add p-value for the plot
+
+p <-summary(curv_dark)
+
+p<-round(as.numeric(p[["coefficients"]][["cond"]][[11]]),3)
+
+subtitle<- paste0("p-value = ",p)
+
+# plot 
+
+plot_dark_curv <-ggplot()+
+  geom_line(data = dark_curv_predict,aes(x= x,y = predicted),size=1.5,color= "#7DCDE4")+
+  geom_ribbon(data = dark_curv_predict,aes(x=x,ymin=conf.low,ymax=conf.high),alpha=0.2,fill="#7DCDE4")+
+  ggtitle(label = "Curvature dark diversity",
+          subtitle = subtitle)+
+  xlab("Curvature") +
+  ylab("Dark diversity")+theme_classic()
+
+plot_dark_curv
+
+rm(p,subtitle,dark_curv_predict)
+
+```
+
+
+
+#### Curvature observed richness
+
+```{r}
+
+# run model
+
+curv_observed<-glmmTMB(log(observed_richness) ~  Curvature + protection + (1|site), data=complexity_for_model,family = gaussian())
+
+# summary
+
+summary(curv_observed)
+
+# residuals
+
+#plot(simulateResiduals(curv_observed))
+
+# predicted richness
+
+obs_curv_predict=ggpredict(curv_observed,terms = c('Curvature[-2:4 by=0.5]'))
+
+
+# add p-value for the plot
+
+p <-summary(curv_observed)
+
+p<-round(as.numeric(p[["coefficients"]][["cond"]][[11]]),3)
+
+subtitle<- paste0("p-value = ",p)
+
+# plot
+
+plot_observed_curv <- ggplot()+
+  geom_line(data = obs_curv_predict,aes(x= x,y = predicted),size= 1.5,color= "#F2E96C")+
+  geom_ribbon(data = obs_curv_predict,aes(x=x,ymin=conf.low,ymax=conf.high),alpha= 0.2,fill="#F2E96C")+
+  ggtitle(label = "Curvature observed richness",
+          subtitle = subtitle)+
+  xlab("Curvature") + 
+  ylab("Observed richness")+theme_classic()
+
+plot_observed_curv
+
+rm(p,subtitle,obs_curv_predict)
+
+```
+
+
+#### Curvature species pool
+
+
+```{r}
+# run model
+
+curv_total <- glmmTMB(log(total) ~  Curvature + protection + (1|site), data=complexity_for_model,family = gaussian())
+
+# summary
+
+summary(curv_total)
+
+# plot residuals
+
+#plot(simulateResiduals(curv_total))
+
+
+# predicted species pool values
+
+sppool_curv_pred =ggpredict(curv_total,terms = c('Curvature[-2:4 by=0.5]'))
+
+# add p-value for the plot
+
+p <-summary(curv_total)
+
+p<-round(as.numeric(p[["coefficients"]][["cond"]][[11]]),3)
+
+subtitle<- paste0("p-value = ",p)
+
+plot_total_curv<-ggplot()+
+  geom_line(data = sppool_curv_pred,aes(x= x,y = predicted),size=1.5,color= "#ACD672")+
+  geom_ribbon(data = sppool_curv_pred,aes(x=x,ymin=conf.low,ymax=conf.high),alpha=0.2,fill="#ACD672")+  ggtitle(label = "Curvature species pool",
+          subtitle = subtitle)+
+  xlab("Curvature") +
+  ylab("Species pool")+theme_classic()
+
+plot_total_curv
+
+
+rm(p,subtitle,sppool_curv_pred)
+
+```
+
+
+check for interactions between protection and habitat quality 
+
+### dark diversity
+
+```{r}
+
+# run model
+
+int_curv_dark<-glmmTMB(log(dark+1) ~  Curvature * protection + (1|site), data=complexity_for_model,family = gaussian())
+
+# model summary
+
+summary(int_curv_dark)
+
+# model selection 
+
+ms_curve_dark<-as.data.frame(model.sel(int_curv_dark,curv_dark))
+
+ms_curve_dark <- tibble::rownames_to_column(ms_curve_dark, "Model") 
+
+ms_curve_dark$type<-rep("Dark diversity")
+
+```
+### Observed richness
+
+```{r}
+int_curv_observed<-glmmTMB(log(observed_richness) ~  Curvature * protection + (1|site), data=complexity_for_model,family = gaussian())
+
+summary(int_curv_observed)
+
+
+
+ms_curve_obs<-as.data.frame(model.sel(int_curv_observed,curv_observed))
+
+ms_curve_obs <- tibble::rownames_to_column(ms_curve_obs, "Model") 
+
+ms_curve_obs$type<-rep("Observed richness")
+
+```
+
+### Species pool
+
+```{r}
+int_curv_total <- glmmTMB(log(total) ~  Curvature * protection + (1|site), data=complexity_for_model,family = gaussian())
+
+summary(int_curv_total)
+
+
+ms_curve_total<-as.data.frame(model.sel(int_curv_total,curv_total))
+
+ms_curve_total <- tibble::rownames_to_column(ms_curve_total, "Model") 
+
+ms_curve_total$type<-rep("Total species pool")
+```
+
+Unite tables and save
+
+```{r}
+
+ms_curve<-bind_rows(ms_curve_obs,ms_curve_dark,ms_curve_total)
+
+
+ms_curve<-ms_curve %>% relocate(type,.before = Model)
+
+ms_curve<-ms_curve %>% select(-(3:7))
+
+# write.csv(ms_curve,"ms_curve.csv")
+```
+
+
+
+#### Curvature completness
+
+examine response of curvature index to CCI
+
+```{r}
+# run model
+
+completness_curve<-glmmTMB(completeness ~  Curvature + protection+ (1|site), data = complexity_comp,family = gaussian())
+
+# summary
+
+summary(completness_curve)
+
+# model residuals
+
+#plot(simulateResiduals(completness_curve))
+
+# predict completeness
+
+comp_curve_pred=ggpredict(completness_curve,terms = c('Curvature[-2:4 by=0.5]'))
+
+# extract p-value for plot
+
+p <-summary(completness_curve)
+
+p<-round(as.numeric(p[["coefficients"]][["cond"]][[11]]),3)
+
+subtitle<- paste0("p-value = ",p)
+
+#plot
+
+plot_completeness_curv<-ggplot()+
+  geom_line(data = comp_curve_pred,aes(x= x,y = predicted),size=1.5,color= "red")+
+  geom_ribbon(data = comp_curve_pred,aes(x=x,ymin=conf.low,ymax=conf.high),alpha=0.2,fill="red")+
+  xlab("Curvature") +
+  ggtitle(label = "Curvature species pool",
+          subtitle = subtitle)+
+  ylab("Completeness")+theme_classic()
+
+
+plot_completeness_curv
+
+rm(p,subtitle,comp_curve_pred)
+
+```
+
+#### Save curvature models table
+
+models summery tables:
+
+```{r}
+
+# tab_model(curv_total, curv_observed, curv_dark, dv.labels = c("Species pool", "Observed richness", "Dark diversity"), file = "curvature_model_results.xls")
+
+```
+
+# Plot figure 3
+
+combine all 6 plots of model predictions
+
+
+```{r}
+
+a<- plot_dark_curv
+b<- plot_dark_pro
+c<-plot_observed_curv
+d<-plot_obsrved_pro
+e<-plot_total_curv
+f<-plot_total_pro
+
+predictions_plot <- (a+b)/(c+d)/(e+f)+
+  plot_layout(heights = rep(10), widths = rep(5))
+
+predictions_plot
+  
+#ggsave("predictions_plot_new.pdf",predictions_plot, width = 10, height = 10)
+
+rm(a,b,c,d,e,f)
+```
+
+## Vertical relief models
+
+### vr dark diversity
+
+```{r}
+
+# model
+
+vr_dark<-glmmTMB(log(dark+1) ~  VerRelief + protection+ (1|site), data=complexity_for_model,family = gaussian())
+
+#summary
+
+summary(vr_dark)
+
+# plot mosel residuals
+
+#plot(simulateResiduals(vr_dark))
+
+# predicted dark diversity values
+
+predicted_dark_vr=ggpredict(vr_dark,terms = c('VerRelief[-2:4 by=0.5]'))
+
+# extract p-value for plot
+
+p <-summary(vr_dark)
+
+p<-round(as.numeric(p[["coefficients"]][["cond"]][[11]]),3)
+
+subtitle<- paste0("p-value = ",p)
+
+# plot
+
+
+plot_dark_vr <- ggplot()+
+  theme_classic()+
+  geom_line(data = predicted_dark_vr,aes(x= x,y = predicted),size=1.5,color= "#7DCDE4")+
+  geom_ribbon(data = predicted_dark_vr,aes(x=x,ymin=conf.low,ymax=conf.high),alpha=0.2,fill="#7DCDE4")+
+  xlab("Vertical relief") +
+  ylab("Dark diversity")+
+  ggtitle(label = "VR dark diversity",
+          subtitle = subtitle)
+
+plot_dark_vr
+
+rm(p,subtitle,predicted_dark_vr)
+
+
+```
+
+
+
+### vr observed richness
+
+
+```{r}
+
+# run model
+vr_observed<-glmmTMB(log(observed_richness) ~  VerRelief + protection+ (1|site), data=complexity_for_model,family = gaussian())
+
+# summary
+
+summary(vr_observed)
+
+# plot model residuals
+
+#plot(simulateResiduals(vr_observed))
+
+# predict vr values
+
+predict_obs_vr=ggpredict(vr_observed,terms = c('VerRelief[-2:4 by=0.5]'))
+
+# extract p-value for plot
+
+p <-summary(vr_observed)
+
+p<-round(as.numeric(p[["coefficients"]][["cond"]][[11]]),3)
+
+subtitle<- paste0("p-value = ",p)
+
+# plot
+
+plot_observed_vr<-ggplot()+
+  theme_classic()+
+  geom_line(data = predict_obs_vr,aes(x= x,y = predicted),size=1.5,color= "#F2E96C")+
+  geom_ribbon(data = predict_obs_vr,aes(x=x,ymin=conf.low,ymax=conf.high),alpha=0.2,fill="#F2E96C")+
+  xlab("Vertical relief") +
+  ylab("Observed richness")+
+  ggtitle(label = "VR observed richness",
+          subtitle = subtitle)
+
+plot_observed_vr
+
+rm(p,subtitle,predict_obs_vr)
+
+```
+
+
+### vr species pool
+
+
+```{r}
+# run model
+vr_total<-glmmTMB(log(total) ~  VerRelief + protection + (1|site), data=complexity_for_model,family = gaussian())
+
+# summary
+
+summary(vr_total)
+
+# plot model residuals
+
+#plot(simulateResiduals(vr_total))
+
+# predicted species pool values
+
+predicted_total_vr=ggpredict(vr_total,terms = c('VerRelief[-2:4 by=0.5]'))
+
+# extract p-value for plot
+
+p <-summary(vr_total)
+
+p<-round(as.numeric(p[["coefficients"]][["cond"]][[11]]),3)
+
+subtitle<- paste0("p-value = ",p)
+
+# plot
+
+plot_total_vr<-ggplot()+
+  theme_classic()+
+  geom_line(data = predicted_total_vr,aes(x= x,y = predicted),size=1.5,color= "#ACD672")+
+  geom_ribbon(data = predicted_total_vr,aes(x=x,ymin=conf.low,ymax=conf.high),alpha=0.2,fill="#ACD672")+
+  xlab("Vertical relief") +
+  ylab("Total species pool")+
+  ggtitle(label = "VR species pool",
+          subtitle = subtitle)
+
+plot_total_vr
+
+rm(predicted_total_vr,p,subtitle)
+
+
+```
+
+check for interaction between protection and habitat quality - dark diversity
+
+```{r}
+int_vr_dark<-glmmTMB(log(dark+1) ~  VerRelief * protection+ (1|site), data=complexity_for_model,family = gaussian())
+
+summary(int_vr_dark)
+
+ms_vr_dark<-as.data.frame(model.sel(int_vr_dark,vr_dark))
+
+ms_vr_dark <- tibble::rownames_to_column(ms_vr_dark, "Model") 
+
+ms_vr_dark$type<-rep("Dark diversity")
+
+
+```
+
+
+check for interaction between protection and habitat quality - observed rishness
+
+```{r}
+int_vr_observed<-glmmTMB(log(observed_richness) ~  VerRelief * protection+ (1|site), data=complexity_for_model,family = gaussian())
+
+summary(int_vr_observed)
+
+ms_vr_obs<-as.data.frame(model.sel(int_vr_observed,vr_observed))
+
+ms_vr_obs <- tibble::rownames_to_column(ms_vr_obs, "Model") 
+
+ms_vr_obs$type<-rep("Observed richness")
+```
+
+check for interaction between protection and habitat quality - species pool
+
+```{r}
+int_vr_total<-glmmTMB(log(total) ~  VerRelief * protection + (1|site), data=complexity_for_model,family = gaussian())
+
+summary(int_vr_total)
+
+
+ms_vr_total<-as.data.frame(model.sel(int_vr_total,vr_total))
+
+ms_vr_total <- tibble::rownames_to_column(ms_vr_total, "Model") 
+
+ms_vr_total$type<-rep("Total species pool")
+
+```
+
+unite tables and save
+
+```{r}
+
+ms_vr<-bind_rows(ms_vr_obs,ms_vr_dark,ms_vr_total)
+
+
+ms_vr<-ms_vr %>% relocate(type,.before = Model)
+
+ms_vr<-ms_vr %>% select(-(3:7))
+
+#write.csv(ms_vr,"ms_vr.csv")
+```
+
+
+### vr completness
+
+
+```{r}
+# model
+completeness_vr<-glmmTMB(completeness ~  VerRelief + protection+ (1|site), data=complexity_comp,family = gaussian())
+
+# summary
+
+summary(completeness_vr)
+
+# plot model residuals
+
+#plot(simulateResiduals(completeness_vr))
+
+# predicted completeness values
+
+predicted_comp_vr=ggpredict(completeness_vr,terms = c('VerRelief[-2:4 by=0.5]'))
+
+# extract p-value for plot
+
+p <-summary(completeness_vr)
+
+p<-round(as.numeric(p[["coefficients"]][["cond"]][[11]]),3)
+
+subtitle<- paste0("p-value = ",p)
+
+# plot
+
+plot_completeness_vr<-ggplot()+
+  theme_classic()+
+  geom_line(data = predicted_comp_vr,aes(x= x,y = predicted),size=1.5,color= "red")+
+  geom_ribbon(data = predicted_comp_vr,aes(x=x,ymin=conf.low,ymax=conf.high),alpha=0.2,fill="red")+
+  xlab("Vertical relief") +
+  ylab("Completeness")+
+  ggtitle(label = "VR completeness",
+          subtitle = subtitle)
+
+plot_completeness_vr
+
+rm(predicted_comp_vr,p,subtitle)
+
+
+```
+
+### Save vr models table
+
+models summery tables:
+
+
+```{r}
+
+# tab_model(vr_total, vr_observed, vr_dark, dv.labels = c("Species pool", "Observed richness", "Dark diversity"), file = "vr_model_results.xls")
+
+```
+
+
+# Plot vertical relief appendix
+
+```{r}
+a<- plot_dark_vr
+b<- plot_observed_vr
+c<- plot_total_vr
+
+
+vr_predictions_plot <- a/b/c +
+  plot_layout(heights = rep(10), widths = rep(5))
+
+vr_predictions_plot
+  
+#ggsave("vr_predictions_plot.pdf",vr_predictions_plot, width = 5, height = 10)
+
+rm(a,b,c)
+
+```
+
+# Plot completness appendix
+
+
+```{r}
+a<- plot_completness_pro
+b<- plot_completeness_curv
+c<- plot_completeness_vr
+
+
+completeness_prediction_plot <- a/b/c +
+  plot_layout(heights = rep(10), widths = rep(5))
+
+completeness_prediction_plot
+  
+#ggsave("completeness_prediction_plot.pdf",completeness_prediction_plot,width = 5, height = 10)
+
+rm(a,b,c)
+
+```
+
+### Save completness models table
+
+models summery tables:
+
+
+```{r}
+
+# tab_model(completeness_model, completness_curve, completeness_vr, dv.labels = c("Protection", "Curvature", "Vertical relief"), file = "completenes_model_results_new.xls")
+
+```
+
